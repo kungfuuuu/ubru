@@ -148,3 +148,79 @@ html{min-width:320px;overflow-x:hidden}body{min-width:320px;overflow-x:hidden}im
 @media(prefers-reduced-motion:reduce){
   .sidebar,.sidebar-overlay{transition:none!important}
 }
+.forgot-password{margin-top:6px}
+
+/* Developer page */
+.developer-page{display:flex;flex-direction:column;gap:26px;min-width:0}
+.developer-section{min-width:0}
+.developer-team-section{border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+.developer-section .section-title{margin-bottom:12px}
+.developer-advisor{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;width:min(440px,100%);margin-inline:auto;min-width:0;min-height:280px;padding:0;overflow:hidden;background:var(--soft);box-shadow:0 4px 14px rgba(35,76,55,.05)}
+.developer-advisor-avatar{height:235px;width:100%;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;background:var(--bg)}
+.developer-advisor-photo{width:190px;height:235px;object-fit:cover;object-position:center top;border:0;display:block}
+.developer-advisor-info{position:relative;z-index:1;width:min(440px,calc(100% - 24px));margin:0;padding:13px 18px 12px;text-align:center;border:0;border-radius:0;background:transparent;box-shadow:none}
+.developer-icon{width:42px;height:42px;display:grid;place-items:center;flex:none;border-radius:10px;background:var(--green-3);color:var(--green-2);font-size:20px}
+.developer-icon-advisor{background:#eff6ff;color:#2e7ad5}
+.developer-advisor h3,.developer-member-card h3{font-family:Kanit;font-size:15px;font-weight:500;margin:0;overflow-wrap:anywhere}
+.developer-advisor p{color:var(--muted);font-size:12px;margin:3px 0 0}
+.developer-section-heading .section-title{margin-bottom:2px}
+.developer-section-heading .muted{margin:0}
+.developer-team-section .developer-section-heading{padding-bottom:12px;border-bottom:1px solid var(--line)}
+.developer-team-grid{display:grid;grid-template-columns:repeat(3,minmax(220px,280px));justify-content:center;gap:16px;margin-top:14px}
+.developer-member-card{display:flex;flex-direction:column;align-items:stretch;text-align:center;min-width:0;min-height:260px;padding:0;overflow:hidden;background:var(--bg);box-shadow:0 4px 14px rgba(35,76,55,.05)}
+.developer-member-card{animation:cardEnter .45s cubic-bezier(.22,1,.36,1) both;transition:transform .22s cubic-bezier(.22,1,.36,1),box-shadow .22s ease}
+.developer-member-card:hover{transform:translateY(-7px) scale(1.02);box-shadow:0 12px 28px rgba(35,76,55,.14)}
+.developer-member-card:nth-child(2){animation-delay:.06s}
+.developer-member-card:nth-child(3){animation-delay:.12s}
+.developer-member-card:nth-child(4){animation-delay:.18s}
+.developer-member-card:nth-child(5){animation-delay:.24s}
+.developer-member-avatar{position:relative;flex:none;width:240px;height:180px;aspect-ratio:auto;min-height:0;margin:14px auto 0;display:grid;place-items:center;color:var(--green-2);font-size:76px;line-height:1;background:var(--bg);overflow:hidden;border-radius:13px}
+.developer-member-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center top;display:block}
+.developer-member-info{position:relative;z-index:1;margin:0;padding:12px 10px 11px;border:0;border-radius:0;background:transparent;box-shadow:none;min-width:0}
+.developer-member-card h3{width:100%;font-size:14px;line-height:1.45}
+.developer-student-label{color:var(--muted);font-size:11px;margin-top:12px}
+.developer-student-id{font-size:13px;letter-spacing:.02em;color:var(--ink);margin-top:2px;overflow-wrap:anywhere}
+.developer-member-role{color:var(--green-2);font-size:10px;margin-top:auto;padding-top:12px}
+.dark-mode .developer-member-card,.dark-mode .developer-advisor{background:var(--bg)}
+.dark-mode .developer-member-avatar{background:#244c30}
+@media (min-width:641px) and (max-width:1024px){.developer-team-grid{grid-template-columns:repeat(2,minmax(220px,280px));justify-content:center}}
+@media (max-width:640px){.developer-page{gap:22px}.developer-team-section{padding:15px}.developer-team-grid{grid-template-columns:minmax(0,1fr);gap:12px}.developer-member-card{min-height:0}.developer-advisor{min-height:260px}.developer-advisor-avatar{height:215px}.developer-advisor-photo{height:215px}.developer-advisor h3{font-size:14px}}
+@media(prefers-reduced-motion:reduce){.developer-member-card{animation:none!important;transition:none!important}.developer-member-card:hover{transform:none}}
+
+/* Booking availability and admin management */
+.availability-panel{margin-top:16px;padding:16px;border:1px solid var(--line);border-radius:var(--radius);background:var(--soft)}
+.availability-toolbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,220px) auto;gap:12px;align-items:end}
+.availability-toolbar .label{margin:0}.availability-day-actions{display:flex;gap:7px}.availability-day-actions .btn-outline{min-width:40px;padding-inline:10px}
+.availability-heading{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:17px;padding-top:13px;border-top:1px solid var(--line);font-size:13px}
+.availability-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:12px;width:100%;min-width:0}
+.availability-slot{display:flex;flex-direction:column;gap:2px;align-items:center;width:100%;min-width:0;padding:9px 5px;border:1px solid #b9dfbd;border-radius:9px;background:#f0fbf1;color:var(--green);cursor:pointer;overflow:hidden}
+.availability-slot small{font-size:10px;color:var(--muted)}.availability-slot:hover{border-color:var(--green-2);transform:translateY(-1px)}
+.availability-slot.busy{border-color:#efc2c6;background:#fff3f4;color:#bf4350;cursor:not-allowed;opacity:.82}.availability-slot.busy small{color:#bf4350}
+.availability-legend{display:flex;gap:18px;margin-top:12px;font-size:11px;color:var(--muted)}.availability-legend span{display:inline-flex;align-items:center;gap:5px}
+.availability-legend .legend-box{width:10px;height:10px;border-radius:3px;background:#b9dfbd}.availability-legend span:nth-child(2) .legend-box{background:#efc2c6}
+.admin-room-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.admin-room-card{padding:17px}.admin-room-card h3{font-family:Kanit;font-size:16px;margin:0 0 4px}.admin-room-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.admin-room-card .room-meta{margin:16px 0;font-size:11px}.admin-room-form{margin-bottom:18px}.admin-direct-booking{margin-bottom:18px}.rate-form{max-width:720px}
+.admin-room-card .actions{justify-content:flex-end}.admin-room-card .status{white-space:nowrap}
+@media(max-width:640px){.availability-toolbar{grid-template-columns:1fr 1fr}.availability-day-actions{grid-column:1/-1}.availability-heading{align-items:flex-start;flex-direction:column;gap:3px}.availability-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.availability-slot strong,.availability-slot small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.admin-room-grid{grid-template-columns:1fr}}
+.calendar-search-panel{margin-bottom:16px}.calendar-search-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:end}.calendar-search-grid .label{margin:0}.calendar-search-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;padding-top:13px;border-top:1px solid var(--line)}.calendar-search-actions strong{font-family:Kanit;font-size:14px}.calendar-availability-grid .slot{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;text-align:left;padding:10px 12px;cursor:pointer}.calendar-availability-grid .slot small{font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}.calendar-availability-grid .slot:disabled{cursor:not-allowed}.calendar-availability-grid .slot.available:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(35,76,55,.08)}
+@media(max-width:640px){.calendar-search-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.calendar-search-actions{flex-wrap:wrap}.calendar-search-actions strong{order:-1;width:100%;text-align:center}.calendar-availability-grid .slot{padding:9px 8px;font-size:11px}}
+
+/* Keep filtered room cards from stretching across the entire result row. */
+.room-card{max-width:360px}
+@media(max-width:640px){.room-card{max-width:none}}
+.room-approval{display:block;width:max-content;max-width:100%;margin-top:6px;padding:3px 6px;border-radius:4px;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.room-approval.special{background:#fff4c9;color:#b77900}
+.room-approval.general{background:#dff8ec;color:#1a9a61}
+.dynamic-calendar.day-view{min-width:520px}
+.dynamic-calendar.day-view .slot{min-height:52px;padding:9px 12px;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;gap:2px}
+.dynamic-calendar.day-view .slot strong{font-size:11px}
+.dynamic-calendar.day-view .slot small{font-size:10px;color:var(--muted)}
+.dynamic-calendar.week-view .slot{min-height:48px;padding:8px;font-size:10px}
+.calendar-time-panel{margin-bottom:16px}
+.calendar-time-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.calendar-time-grid .label{margin:0}
+.calendar-time-summary{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);color:var(--muted);font-size:11px}
+.calendar-time-summary strong{color:var(--ink);font-family:Kanit}
+@media(max-width:640px){.calendar-time-grid{grid-template-columns:1fr;gap:10px}}
+
+/* Rendering replaces the page shell after controls change; avoid replaying entrance motion on every click. */
+.main,.room-card,.panel,.stat-card,.notification-item,.data-table,.developer-member-card{animation:none!important}
