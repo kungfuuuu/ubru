@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_FILE: /app/data/ubru.sqlite
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the environment}
+    volumes:
+      - ubru_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  ubru_data:
