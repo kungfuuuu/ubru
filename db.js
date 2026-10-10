@@ -94,6 +94,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   expired INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expired ON sessions(expired);
+CREATE TABLE IF NOT EXISTS tab_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  csrf_token TEXT NOT NULL,
+  expired INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tab_sessions_expired ON tab_sessions(expired);
 `);
 
 module.exports = db;

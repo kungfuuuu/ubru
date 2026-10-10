@@ -4,16 +4,18 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
 class ApiClient {
   cookie = '';
   csrf = '';
+  tabSession = '';
   async request(path, method='GET', body) {
     const headers={Accept:'application/json'};
     if(this.cookie)headers.Cookie=this.cookie;
+    if(this.tabSession)headers['X-UBRU-Tab-Session']=this.tabSession;
     if(body!==undefined)headers['Content-Type']='application/json';
     if(method!=='GET'&&this.csrf)headers['X-CSRF-Token']=this.csrf;
     const response=await fetch(`${base}${path}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
     const setCookie=response.headers.get('set-cookie');if(setCookie)this.cookie=setCookie.split(';')[0];
     const data=await response.json().catch(()=>({}));return {status:response.status,data};
   }
-  async login(email,password){const token=await this.request('/api/csrf');assert(token.status===200,'CSRF endpoint should respond');this.csrf=token.data.csrfToken;const result=await this.request('/api/auth/login','POST',{email,password});assert(result.status===200,`Login failed: ${result.data.error}`);this.csrf=result.data.csrfToken;return result.data.user;}
+  async login(email,password){const token=await this.request('/api/csrf');assert(token.status===200,'CSRF endpoint should respond');this.csrf=token.data.csrfToken;const result=await this.request('/api/auth/login','POST',{email,password});assert(result.status===200,`Login failed: ${result.data.error}`);this.csrf=result.data.csrfToken;this.tabSession=result.data.tabSessionToken;assert(this.tabSession,'Login should return a tab session token');return result.data.user;}
 }
 async function findSlot(client,roomId,avoidDates=[]){
   for(let attempt=0;attempt<500;attempt++){
@@ -27,6 +29,16 @@ async function findSlot(client,roomId,avoidDates=[]){
 }
 async function run(){
   const user=new ApiClient(),admin=new ApiClient();
+  const sharedAdmin=new ApiClient();
+  assert((await sharedAdmin.login('admin@ubru.test','AdminTest2026!')).role==='admin','Shared-cookie Admin login role mismatch');
+  const sharedUser=new ApiClient();
+  sharedUser.cookie=sharedAdmin.cookie;
+  sharedUser.csrf=sharedAdmin.csrf;
+  assert((await sharedUser.login('user@ubru.test','UserTest2026!')).role==='user','Shared-cookie User login role mismatch');
+  assert((await sharedAdmin.request('/api/auth/me')).data.user?.role==='admin','Admin tab session must remain Admin after User login in another tab');
+  assert((await sharedUser.request('/api/auth/me')).data.user?.role==='user','User tab session must remain User after login');
+  await sharedAdmin.request('/api/auth/logout','POST',{});
+  await sharedUser.request('/api/auth/logout','POST',{});
   assert((await user.login('user@ubru.test','UserTest2026!')).role==='user','User login role mismatch');
   if(process.env.CHECK_RESTART==='1'){
     const persisted=await user.request('/api/bookings');
@@ -36,9 +48,14 @@ async function run(){
   const general=rooms.find(r=>!r.approvalRequired),special=rooms.find(r=>r.approvalRequired);
   assert(general&&special,'Seed must include both general and special rooms');
   const generalSlot=await findSlot(user,general.id),specialSlot=await findSlot(user,special.id),rejectSlot=await findSlot(user,special.id,[specialSlot.date]),adminSlot=await findSlot(user,general.id,[generalSlot.date]);
-  const bookingBody=(roomId,slot,purpose)=>({roomId,date:slot.date,startTime:slot.startTime,endTime:slot.endTime,purpose,people:2,equipment:['ไมโครโฟนไร้สาย'],note:'FOR TEST / EDUCATION ONLY'});
+  const bookingBody=(roomId,slot,purpose)=>({roomId,name:'ผู้ใช้ทดสอบ',code:'TEST-USER',department:'FOR TEST / EDUCATION ONLY',date:slot.date,startTime:slot.startTime,endTime:slot.endTime,purpose,people:2,equipment:['ไมโครโฟนไร้สาย'],note:'FOR TEST / EDUCATION ONLY'});
+  const cutoffDate=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Bangkok'}).format(new Date());
+  const cutoff=await user.request('/api/bookings','POST',bookingBody(general.id,{date:cutoffDate,startTime:'23:00',endTime:'23:30'},'Smoke test cancellation cutoff'));
+  assert(cutoff.status===201,'A near-term booking should be created for cancellation-rule testing');
+  assert((await user.request(`/api/bookings/${cutoff.data.booking.id}/cancel`,'PATCH',{})).status===409,'User must not cancel within 24 hours');
   const auto=await user.request('/api/bookings','POST',bookingBody(general.id,generalSlot,'Smoke test general booking'));
   assert(auto.status===201&&auto.data.booking.status==='อนุมัติแล้ว','General room should auto-approve');
+  assert(auto.data.booking.name==='ผู้ใช้ทดสอบ'&&auto.data.booking.code==='TEST-USER'&&auto.data.booking.department==='FOR TEST / EDUCATION ONLY','Booking applicant details should be persisted');
   const collisionEnd=`${String(Number(generalSlot.startTime.slice(0,2))+1).padStart(2,'0')}:30`;
   const collision=await user.request('/api/bookings','POST',bookingBody(general.id,{...generalSlot,endTime:collisionEnd},'Smoke test overlapping booking'));
   assert(collision.status===409,'Overlapping booking must be rejected');
@@ -73,13 +90,18 @@ async function run(){
   assert((await admin.request(`/api/bookings/${toReject.data.booking.id}/decision`,'PATCH',{decision:'reject'})).status===200,'Admin rejection failed');
   const issue=await user.request('/api/issues','POST',{roomId:general.id,type:'โปรเจคเตอร์',priority:'เร่งด่วน',detail:'Smoke test report for equipment'});
   assert(issue.status===201,'User issue report should be saved');
-  assert((await admin.request(`/api/issues/${issue.data.issue.id}`,'PATCH',{status:'กำลังดำเนินการ'})).status===200,'Admin should manage issue status');
+  const issueUpdate=await admin.request(`/api/issues/${issue.data.issue.id}`,'PATCH',{status:'กำลังดำเนินการ'});
+  assert(issueUpdate.status===200&&issueUpdate.data.issue.status==='กำลังดำเนินการ','Admin should manage issue status');
+  const userIssues=await user.request('/api/issues');
+  assert(userIssues.status===200&&userIssues.data.issues.some(item=>item.id===issue.data.issue.id&&item.status==='กำลังดำเนินการ'),'User should see the Admin-updated issue status');
   const announcement=await admin.request('/api/announcements','POST',{category:'ทดสอบ',title:'Smoke test notice',body:'FOR TEST / EDUCATION ONLY'});
   assert(announcement.status===201,'Admin should publish announcement');
   assert((await user.request('/api/announcements')).data.announcements.some(a=>a.id===announcement.data.announcement.id),'User should see database announcement');
   assert((await admin.request(`/api/announcements/${announcement.data.announcement.id}`,'PATCH',{category:'ทดสอบ',title:'Smoke test notice edited',body:'FOR TEST / EDUCATION ONLY',active:true})).status===200,'Admin should edit announcement');
   const testRoom=await admin.request('/api/rooms','POST',{name:'Smoke test room',type:'ห้องทดสอบ',building:'FOR TEST / EDUCATION ONLY',capacity:4,features:['ไมโครโฟน'],approvalRequired:false,img:''});
   assert(testRoom.status===201,'Admin should create room');
+  const userRoomsAfterCreate=await user.request('/api/rooms');
+  assert(userRoomsAfterCreate.status===200&&userRoomsAfterCreate.data.rooms.some(r=>r.id===testRoom.data.room.id&&r.name==='Smoke test room'),'User should see an Admin-created room from SQLite');
   assert((await admin.request(`/api/rooms/${testRoom.data.room.id}`,'PUT',{name:'Smoke test room edited',type:'ห้องทดสอบ',building:'FOR TEST / EDUCATION ONLY',capacity:5,features:[],approvalRequired:true,img:''})).status===200,'Admin should edit room');
   assert((await admin.request(`/api/rooms/${testRoom.data.room.id}`,'DELETE')).status===200,'Admin should delete room');
   assert((await admin.request(`/api/announcements/${announcement.data.announcement.id}`,'DELETE')).status===200,'Admin should delete announcement');
@@ -106,6 +128,7 @@ async function run(){
       const testBookings=db.prepare("SELECT date FROM bookings WHERE purpose LIKE 'Smoke test %'").all();
       for(const row of testBookings)db.prepare("DELETE FROM notifications WHERE message LIKE '%' || ? || '%'").run(row.date);
       db.prepare("DELETE FROM bookings WHERE purpose LIKE 'Smoke test %'").run();
+      db.prepare("DELETE FROM bookings WHERE name='Smoke test staff' AND code='TEST-STAFF' AND booked_by='แอดมิน'").run();
       db.prepare("DELETE FROM issue_reports WHERE detail='Smoke test report for equipment'").run();
       db.prepare("DELETE FROM notifications WHERE (title='มีรายงานปัญหาห้อง' AND message LIKE '%ผู้ใช้ทดสอบ แจ้งโปรเจคเตอร์%') OR (title='อัปเดตการแจ้งปัญหา' AND message LIKE '%กำลังดำเนินการ%') OR (title='ประกาศใหม่' AND message='Smoke test notice')").run();
       db.prepare("DELETE FROM announcements WHERE title LIKE 'Smoke test notice%'").run();

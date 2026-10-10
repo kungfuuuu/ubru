@@ -224,3 +224,10 @@ html{min-width:320px;overflow-x:hidden}body{min-width:320px;overflow-x:hidden}im
 
 /* Rendering replaces the page shell after controls change; avoid replaying entrance motion on every click. */
 .main,.room-card,.panel,.stat-card,.notification-item,.data-table,.developer-member-card{animation:none!important}
+
+/* The issue-status select must be able to open below the last table row. */
+.data-table:has(.custom-dropdown){overflow:visible!important;position:relative;z-index:5}
+.data-table:has(.custom-dropdown) .custom-dropdown{z-index:6}
+.data-table .issue-status-dropdown{min-width:220px}
+.data-table .issue-status-dropdown.active-dropdown{z-index:1000}
+.data-table .issue-status-dropdown .custom-dropdown-menu{top:calc(100% + 5px);bottom:auto;max-height:none}

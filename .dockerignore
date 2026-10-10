@@ -3,3 +3,11 @@ node_modules
 .env
 data
 npm-debug.log
+*.log
+*.zip
+.vscode
+.idea
+coverage
+tmp
+temp
+DEPLOY.md

@@ -1,4 +1,31 @@
+# Dependencies
 node_modules/
-data/
+
+# Local environment files and secrets
 .env
+.env.*
+!.env.example
+
+# Local databases and runtime data
+data/
+
+# Deployment artifacts and archives
+deploy-output/
+*.zip
+
+# Logs
+*.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Temporary files and local tooling output
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+coverage/
+.remote-audit/

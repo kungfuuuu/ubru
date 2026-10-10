@@ -6,6 +6,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      HOST: 0.0.0.0
       DATABASE_FILE: /app/data/ubru.sqlite
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the environment}
     volumes:

@@ -9,9 +9,60 @@ const db = require('./db');
 const app = express();
 const isProduction = process.env.NODE_ENV === 'production';
 if (isProduction) app.set('trust proxy', 1);
-if (isProduction && (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)) throw new Error('Set SESSION_SECRET to at least 32 characters in production.');
+if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) throw new Error('Set SESSION_SECRET to at least 32 characters.');
 app.disable('x-powered-by');
 app.use(express.json({ limit: '32kb' }));
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+    "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com data:",
+    "img-src 'self' https: data:",
+    "connect-src 'self'"
+  ].join('; '));
+  if (isProduction) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 20;
+const loginAttempts = new Map();
+function loginRateLimit(req, res, next) {
+  const now = Date.now();
+  const key = req.ip || req.socket.remoteAddress || 'unknown';
+  const record = loginAttempts.get(key);
+  if (!record || record.resetAt <= now) {
+    loginAttempts.set(key, { count: 0, resetAt: now + LOGIN_WINDOW_MS });
+    return next();
+  }
+  if (record.count >= LOGIN_MAX_ATTEMPTS) {
+    res.setHeader('Retry-After', Math.ceil((record.resetAt - now) / 1000));
+    return res.status(429).json({ error: 'พยายามเข้าสู่ระบบมากเกินไป กรุณาลองใหม่ภายหลัง' });
+  }
+  next();
+}
+function recordLoginAttempt(req, succeeded) {
+  const key = req.ip || req.socket.remoteAddress || 'unknown';
+  if (succeeded) { loginAttempts.delete(key); return; }
+  const now = Date.now();
+  const record = loginAttempts.get(key);
+  if (!record || record.resetAt <= now) loginAttempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+  else record.count += 1;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of loginAttempts) if (record.resetAt <= now) loginAttempts.delete(key);
+}, LOGIN_WINDOW_MS).unref();
+
 class SQLiteSessionStore extends session.Store {
   get(sid, callback) { try { const row=db.prepare('SELECT sess,expired FROM sessions WHERE sid=?').get(sid); if(!row)return callback(null,null); if(row.expired<=Date.now()){this.destroy(sid,()=>callback(null,null));return;} callback(null,JSON.parse(row.sess)); } catch(error) { callback(error); } }
   set(sid,sess,callback=()=>{}) { try { const expires=sess.cookie?.expires?new Date(sess.cookie.expires).getTime():Date.now()+8*60*60*1000; db.prepare('INSERT INTO sessions(sid,sess,expired) VALUES(?,?,?) ON CONFLICT(sid) DO UPDATE SET sess=excluded.sess,expired=excluded.expired').run(sid,JSON.stringify(sess),expires);callback(null); } catch(error){callback(error);} }
@@ -21,7 +72,7 @@ class SQLiteSessionStore extends session.Store {
 app.use(session({
   store: new SQLiteSessionStore(),
   name: 'ubru.sid',
-  secret: process.env.SESSION_SECRET || 'development-only-change-this-secret-before-deploying',
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: { httpOnly: true, sameSite: 'strict', secure: isProduction, maxAge: 8 * 60 * 60 * 1000 }
@@ -29,25 +80,51 @@ app.use(session({
 
 const asyncRoute = handler => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 db.prepare('DELETE FROM sessions WHERE expired<=?').run(Date.now());
+db.prepare('DELETE FROM tab_sessions WHERE expired<=?').run(Date.now());
+const TAB_SESSION_MAX_AGE = 8 * 60 * 60 * 1000;
+const hashTabToken = token => crypto.createHash('sha256').update(token).digest('hex');
+const newTabSession = userId => {
+  const token = crypto.randomBytes(32).toString('hex');
+  const csrfToken = crypto.randomBytes(32).toString('hex');
+  db.prepare('INSERT INTO tab_sessions(token_hash,user_id,csrf_token,expired) VALUES(?,?,?,?)').run(hashTabToken(token), userId, csrfToken, Date.now() + TAB_SESSION_MAX_AGE);
+  return { token, csrfToken };
+};
+app.use((req,res,next) => {
+  const token = req.get('x-ubru-tab-session');
+  req.hasTabSessionHeader = Boolean(token);
+  req.tabSession = token ? db.prepare('SELECT * FROM tab_sessions WHERE token_hash=? AND expired>?').get(hashTabToken(token), Date.now()) : null;
+  if (req.tabSession) db.prepare('UPDATE tab_sessions SET expired=? WHERE token_hash=?').run(Date.now() + TAB_SESSION_MAX_AGE, req.tabSession.token_hash);
+  next();
+});
 const publicUser = row => row && ({ id: row.id, email: row.email, name: row.name, code: row.code, department: row.department, role: row.role, active: Boolean(row.active) });
 const roomView = row => ({ id: row.id, name: row.name, type: row.type, building: row.building, capacity: row.capacity, img: row.img, features: JSON.parse(row.features || '[]'), approvalRequired: Boolean(row.approval_required), active: Boolean(row.active) });
 const bookingView = row => ({ id: row.id, roomId: row.room_id, userId: row.user_id, name: row.name, code: row.code, department: row.department, purpose: row.purpose, people: row.people, date: row.date, startTime: row.start_time, endTime: row.end_time, time: `${row.start_time} - ${row.end_time} น.`, equipment: JSON.parse(row.equipment || '[]'), note: row.note, status: row.status, bookedBy: row.booked_by, createdAt: row.created_at, roomName: row.room_name, building: row.building, roomType: row.room_type, approvalRequired: Boolean(row.approval_required) });
 const roomSelect = `SELECT b.*, r.name AS room_name, r.building, r.type AS room_type, r.approval_required FROM bookings b JOIN rooms r ON r.id=b.room_id`;
-const currentUser = req => req.session.user ? db.prepare('SELECT * FROM users WHERE id=? AND active=1').get(req.session.user.id) : null;
+const currentUser = req => req.hasTabSessionHeader ? (req.tabSession ? db.prepare('SELECT * FROM users WHERE id=? AND active=1').get(req.tabSession.user_id) : null) : (req.session.user ? db.prepare('SELECT * FROM users WHERE id=? AND active=1').get(req.session.user.id) : null);
 function requireAuth(req, res, next) { const user = currentUser(req); if (!user) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบ' }); req.user = user; next(); }
 function requireAdmin(req, res, next) { if (req.user?.role !== 'admin') return res.status(403).json({ error: 'ไม่มีสิทธิ์ผู้ดูแลระบบ' }); next(); }
 function csrf(req, res, next) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
-  const expected = req.session.csrfToken, provided = req.get('x-csrf-token');
+  const expected = req.hasTabSessionHeader ? req.tabSession?.csrf_token : req.session.csrfToken, provided = req.get('x-csrf-token');
   if (!expected || !provided || expected.length !== provided.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(provided))) return res.status(403).json({ error: 'CSRF token ไม่ถูกต้อง กรุณาโหลดหน้าใหม่' });
   next();
 }
 app.use('/api', (req,res,next) => { if (req.path === '/csrf' || req.path === '/auth/login') return next(); csrf(req,res,next); });
+// Booking, approval, notification, and room-management data must never be served
+// from a browser cache. Admin pages otherwise can show an older booking list
+// after a user creates a new special-room request.
+app.use('/api', (req,res,next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
 const validate = (req,res,next) => { const errors = validationResult(req); if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg, details: errors.array() }); next(); };
 const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value) && new Date(`${value}T00:00:00Z`).toISOString().slice(0,10) === value;
 const minutes = value => { const match = /^(\d{2}):(\d{2})$/.exec(String(value)); return match && Number(match[1]) < 24 && Number(match[2]) < 60 ? Number(match[1]) * 60 + Number(match[2]) : NaN; };
 const bangkokDate = () => Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Bangkok',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(part=>[part.type,part.value]));
 const todayInBangkok = () => { const parts=bangkokDate(); return `${parts.year}-${parts.month}-${parts.day}`; };
+const bookingStartTimestamp = (date,time) => new Date(`${date}T${time}:00+07:00`).getTime();
 function notify({ userId = null, role = 'user', title, message, type = 'info' }) {
   db.prepare('INSERT INTO notifications(user_id,role_target,title,message,type) VALUES(?,?,?,?,?)').run(userId, role, title, message, type);
 }
@@ -56,17 +133,23 @@ function overlap(roomId,date,start,end,excludeId) {
     .get(roomId,date,excludeId ?? null,excludeId ?? null,end,start);
 }
 
-app.get('/api/csrf', (req,res) => { req.session.csrfToken ||= crypto.randomBytes(32).toString('hex'); res.json({ csrfToken: req.session.csrfToken }); });
-app.post('/api/auth/login', csrf, [body('email').isEmail().withMessage('กรุณากรอกอีเมลให้ถูกต้อง'), body('password').isString().isLength({ min: 8, max: 200 }).withMessage('รหัสผ่านไม่ถูกต้อง')], validate, asyncRoute(async (req,res) => {
+app.get('/api/csrf', (req,res) => { if (req.tabSession) return res.json({ csrfToken: req.tabSession.csrf_token }); req.session.csrfToken ||= crypto.randomBytes(32).toString('hex'); res.json({ csrfToken: req.session.csrfToken }); });
+app.post('/api/auth/login', loginRateLimit, csrf, [body('email').isEmail().withMessage('กรุณากรอกอีเมลให้ถูกต้อง'), body('password').isString().isLength({ min: 8, max: 200 }).withMessage('รหัสผ่านไม่ถูกต้อง')], validate, asyncRoute(async (req,res) => {
   const user = db.prepare('SELECT * FROM users WHERE email=? COLLATE NOCASE AND active=1').get(req.body.email.trim());
   const bcrypt = require('bcryptjs');
-  if (!user || !(await bcrypt.compare(req.body.password, user.password_hash))) return res.status(401).json({ error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
-  await new Promise((resolve,reject)=>req.session.regenerate(err=>err?reject(err):resolve()));
-  req.session.user = { id: user.id };
-  req.session.csrfToken = crypto.randomBytes(32).toString('hex');
-  res.json({ user: publicUser(user), csrfToken: req.session.csrfToken });
+  if (!user || !(await bcrypt.compare(req.body.password, user.password_hash))) {
+    recordLoginAttempt(req, false);
+    return res.status(401).json({ error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
+  }
+  recordLoginAttempt(req, true);
+  if (req.tabSession) db.prepare('DELETE FROM tab_sessions WHERE token_hash=?').run(req.tabSession.token_hash);
+  const tab = newTabSession(user.id);
+  res.json({ user: publicUser(user), csrfToken: tab.csrfToken, tabSessionToken: tab.token });
 }));
-app.post('/api/auth/logout', requireAuth, (req,res) => req.session.destroy(err => { if (err) return res.status(500).json({ error: 'ออกจากระบบไม่สำเร็จ' }); res.clearCookie('ubru.sid', { httpOnly:true, sameSite:'strict', secure:isProduction }); res.json({ ok:true }); }));
+app.post('/api/auth/logout', requireAuth, (req,res) => {
+  if (req.tabSession) { db.prepare('DELETE FROM tab_sessions WHERE token_hash=?').run(req.tabSession.token_hash); return res.json({ok:true}); }
+  req.session.destroy(err => { if (err) return res.status(500).json({ error: 'ออกจากระบบไม่สำเร็จ' }); res.clearCookie('ubru.sid', { httpOnly:true, sameSite:'strict', secure:isProduction }); res.json({ ok:true }); });
+});
 app.get('/api/auth/me', (req,res) => res.json({ user: publicUser(currentUser(req)) }));
 
 app.get('/api/rooms', requireAuth, (req,res) => res.json({ rooms: db.prepare('SELECT * FROM rooms WHERE active=1 ORDER BY id').all().map(roomView) }));
@@ -84,7 +167,7 @@ app.get('/api/bookings', requireAuth, (req,res) => {
   const rows = all ? db.prepare(`${roomSelect} ORDER BY b.date DESC,b.start_time`).all() : db.prepare(`${roomSelect} WHERE b.user_id=? ORDER BY b.date DESC,b.start_time`).all(req.user.id);
   res.json({ bookings: rows.map(bookingView) });
 });
-app.post('/api/bookings', requireAuth, [body('roomId').isInt({min:1}), body('date').custom(validDate).withMessage('วันที่ไม่ถูกต้อง'), body('startTime').custom(v=>Number.isFinite(minutes(v))), body('endTime').custom(v=>Number.isFinite(minutes(v))), body('purpose').trim().isLength({min:2,max:500}), body('people').isInt({min:1,max:1000}), body('equipment').optional().isArray({max:30}), body('note').optional().isString().isLength({max:1000})], validate, (req,res) => {
+app.post('/api/bookings', requireAuth, [body('roomId').isInt({min:1}), body('name').trim().isLength({min:2,max:120}), body('code').trim().isLength({min:2,max:80}), body('department').trim().isLength({min:2,max:160}), body('date').custom(validDate).withMessage('วันที่ไม่ถูกต้อง'), body('startTime').custom(v=>Number.isFinite(minutes(v))), body('endTime').custom(v=>Number.isFinite(minutes(v))), body('purpose').trim().isLength({min:2,max:500}), body('people').isInt({min:1,max:1000}), body('equipment').optional().isArray({max:30}), body('note').optional().isString().isLength({max:1000})], validate, (req,res) => {
   const result = db.transaction(() => {
     const roomRow = db.prepare('SELECT * FROM rooms WHERE id=? AND active=1').get(Number(req.body.roomId));
     if (!roomRow) throw Object.assign(new Error('ไม่พบห้องที่เลือก'),{status:404});
@@ -96,7 +179,7 @@ app.post('/api/bookings', requireAuth, [body('roomId').isInt({min:1}), body('dat
     if (overlap(roomRow.id,req.body.date,start,end)) throw Object.assign(new Error('ช่วงเวลานี้มีการจองแล้ว กรุณาเลือกเวลาอื่น'),{status:409});
     const status = roomRow.approval_required ? 'รออนุมัติ' : 'อนุมัติแล้ว';
     const user = req.user;
-    const info = db.prepare(`INSERT INTO bookings(user_id,room_id,name,code,department,purpose,people,date,start_time,end_time,equipment,note,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(user.id,roomRow.id,user.name,user.code,user.department,req.body.purpose.trim(),Number(req.body.people),req.body.date,start,end,JSON.stringify(req.body.equipment||[]),String(req.body.note||''),status);
+    const info = db.prepare(`INSERT INTO bookings(user_id,room_id,name,code,department,purpose,people,date,start_time,end_time,equipment,note,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(user.id,roomRow.id,req.body.name.trim(),req.body.code.trim(),req.body.department.trim(),req.body.purpose.trim(),Number(req.body.people),req.body.date,start,end,JSON.stringify(req.body.equipment||[]),String(req.body.note||''),status);
     const booking = db.prepare(`${roomSelect} WHERE b.id=?`).get(info.lastInsertRowid);
     if (status === 'รออนุมัติ') notify({role:'admin',title:'มีคำขอจองห้องใหม่',message:`${user.name} ขอจอง ${roomRow.name} วันที่ ${req.body.date}`});
     else notify({userId:user.id,title:'การจองได้รับอนุมัติอัตโนมัติ',message:`จอง ${roomRow.name} วันที่ ${req.body.date} สำเร็จ`,type:'success'});
@@ -118,12 +201,14 @@ app.post('/api/admin/bookings', requireAuth, requireAdmin, [body('roomId').isInt
 });
 app.patch('/api/bookings/:id/cancel', requireAuth, [param('id').isInt({min:1})], validate, (req,res) => {
   const result = db.transaction(() => {
-    const booking = db.prepare('SELECT * FROM bookings WHERE id=?').get(Number(req.params.id));
+    const booking = db.prepare('SELECT b.*,r.name AS room_name FROM bookings b JOIN rooms r ON r.id=b.room_id WHERE b.id=?').get(Number(req.params.id));
     if (!booking) throw Object.assign(new Error('ไม่พบรายการจอง'),{status:404});
     if (req.user.role !== 'admin' && booking.user_id !== req.user.id) throw Object.assign(new Error('ไม่มีสิทธิ์แก้ไขรายการของผู้อื่น'),{status:403});
     if (booking.status === 'ยกเลิก' || booking.status === 'ปฏิเสธ') throw Object.assign(new Error('รายการนี้ไม่สามารถยกเลิกได้'),{status:400});
+    if (req.user.role !== 'admin' && bookingStartTimestamp(booking.date,booking.start_time) - Date.now() < 24 * 60 * 60 * 1000) throw Object.assign(new Error('ยกเลิกได้ล่วงหน้าอย่างน้อย 24 ชั่วโมงเท่านั้น'),{status:409});
     db.prepare("UPDATE bookings SET status='ยกเลิก' WHERE id=?").run(booking.id);
     if (booking.user_id) notify({userId:booking.user_id,title:'ยกเลิกการจองแล้ว',message:`รายการจองวันที่ ${booking.date} ถูกยกเลิก`});
+    if (req.user.role !== 'admin') notify({role:'admin',title:'ผู้ใช้ยกเลิกคำขอจอง',message:`${booking.name} ยกเลิก ${booking.room_name} วันที่ ${booking.date} เวลา ${booking.start_time}-${booking.end_time}`,type:'warning'});
     return db.prepare(`${roomSelect} WHERE b.id=?`).get(booking.id);
   })();
   res.json({ booking: bookingView(result) });
@@ -143,7 +228,7 @@ app.patch('/api/bookings/:id/decision', requireAuth, requireAdmin, [param('id').
   res.json({ booking: bookingView(result) });
 });
 
-app.post('/api/issues', requireAuth, [body('roomId').isInt({min:1}), body('type').trim().isLength({min:2,max:100}), body('priority').isIn(['ปกติ','เร่งด่วน','เร่งด่วนมาก']), body('detail').trim().isLength({min:5,max:2000})], validate, (req,res) => {
+app.post('/api/issues', requireAuth, [body('roomId').isInt({min:1}), body('type').trim().isLength({min:2,max:100}), body('priority').isIn(['ปกติ','เร่งด่วน','เร่งด่วนมาก']), body('detail').trim().isLength({min:5,max:2000}).withMessage('กรุณาระบุรายละเอียดอย่างน้อย 5 ตัวอักษร')], validate, (req,res) => {
   if(!db.prepare('SELECT id FROM rooms WHERE id=? AND active=1').get(Number(req.body.roomId)))return res.status(400).json({error:'ไม่พบห้องที่เลือก'});
   const info = db.prepare('INSERT INTO issue_reports(user_id,room_id,type,priority,detail) VALUES(?,?,?,?,?)').run(req.user.id,Number(req.body.roomId),req.body.type.trim(),req.body.priority,req.body.detail.trim());
   notify({role:'admin',title:'มีรายงานปัญหาห้อง',message:`${req.user.name} แจ้ง${req.body.type} (${req.body.priority})`});
@@ -154,11 +239,17 @@ app.get('/api/issues', requireAuth, (req,res) => {
   res.json({ issues: rows });
 });
 app.patch('/api/issues/:id', requireAuth, requireAdmin, [param('id').isInt({min:1}), body('status').isIn(['รอตรวจสอบ','กำลังดำเนินการ','แก้ไขแล้ว','ปิดเรื่อง'])], validate, (req,res) => {
-  const issue = db.prepare('SELECT * FROM issue_reports WHERE id=?').get(Number(req.params.id));
-  if (!issue) return res.status(404).json({error:'ไม่พบรายงานปัญหา'});
-  db.prepare('UPDATE issue_reports SET status=? WHERE id=?').run(req.body.status,issue.id);
-  notify({userId:issue.user_id,title:'อัปเดตการแจ้งปัญหา',message:`สถานะรายงานปัญหาเปลี่ยนเป็น ${req.body.status}`});
-  res.json({ok:true});
+  const result=db.transaction(()=>{
+    const issue=db.prepare('SELECT i.*,r.name AS room_name FROM issue_reports i JOIN rooms r ON r.id=i.room_id WHERE i.id=?').get(Number(req.params.id));
+    if(!issue)return null;
+    if(issue.status===req.body.status)return {issue,changed:false};
+    db.prepare('UPDATE issue_reports SET status=? WHERE id=?').run(req.body.status,issue.id);
+    const message=`รายงานปัญหา${issue.type} ที่${issue.room_name} เปลี่ยนสถานะเป็น “${req.body.status}”`;
+    notify({userId:issue.user_id,title:'อัปเดตสถานะการแจ้งปัญหา',message,type:['แก้ไขแล้ว','ปิดเรื่อง'].includes(req.body.status)?'success':'info'});
+    return {issue:{...issue,status:req.body.status},changed:true};
+  })();
+  if(!result)return res.status(404).json({error:'ไม่พบรายงานปัญหา'});
+  res.json({ok:true,changed:result.changed,issue:result.issue});
 });
 
 app.get('/api/notifications', requireAuth, (req,res) => {
@@ -180,11 +271,20 @@ app.patch('/api/announcements/:id', requireAuth, requireAdmin, [param('id').isIn
 });
 app.delete('/api/announcements/:id', requireAuth, requireAdmin, [param('id').isInt({min:1})], validate, (req,res) => { const info=db.prepare('DELETE FROM announcements WHERE id=?').run(Number(req.params.id));res.status(info.changes?200:404).json(info.changes?{ok:true}:{error:'ไม่พบประกาศ'}); });
 
-app.post('/api/rooms', requireAuth, requireAdmin, [body('name').trim().isLength({min:2,max:120}),body('type').trim().isLength({min:2,max:80}),body('building').trim().isLength({min:2,max:200}),body('capacity').isInt({min:1,max:10000}),body('features').optional().isArray({max:40}),body('img').optional().isString().isLength({max:1000}),body('approvalRequired').isBoolean()], validate, (req,res) => {
+const roomValidation = [
+  body('name').isString().withMessage('กรุณาระบุชื่อห้อง').bail().trim().isLength({min:2,max:120}).withMessage('ชื่อห้องต้องมี 2-120 ตัวอักษร'),
+  body('type').isString().withMessage('กรุณาระบุประเภทห้อง').bail().trim().isLength({min:2,max:80}).withMessage('ประเภทห้องต้องมี 2-80 ตัวอักษร'),
+  body('building').isString().withMessage('กรุณาระบุอาคารหรือที่ตั้ง').bail().trim().isLength({min:2,max:200}).withMessage('อาคารหรือที่ตั้งต้องมี 2-200 ตัวอักษร'),
+  body('capacity').toInt().isInt({min:1,max:10000}).withMessage('ความจุต้องเป็นจำนวนเต็ม 1-10000 คน'),
+  body('features').optional({checkFalsy:true}).isArray({max:40}).withMessage('อุปกรณ์ต้องเป็นรายการข้อความไม่เกิน 40 รายการ'),
+  body('img').optional({checkFalsy:true}).isString().isLength({max:1000}).withMessage('ลิงก์รูปภาพยาวเกิน 1000 ตัวอักษร'),
+  body('approvalRequired').custom(value => value === true || value === false || value === 'true' || value === 'false').withMessage('ค่าประเภทการอนุมัติไม่ถูกต้อง')
+];
+app.post('/api/rooms', requireAuth, requireAdmin, roomValidation, validate, (req,res) => {
   const info=db.prepare('INSERT INTO rooms(name,type,building,capacity,img,features,approval_required) VALUES(?,?,?,?,?,?,?)').run(req.body.name.trim(),req.body.type.trim(),req.body.building.trim(),Number(req.body.capacity),String(req.body.img||''),JSON.stringify(req.body.features||[]),req.body.approvalRequired?1:0);
   res.status(201).json({room:roomView(db.prepare('SELECT * FROM rooms WHERE id=?').get(info.lastInsertRowid))});
 });
-app.put('/api/rooms/:id', requireAuth, requireAdmin, [param('id').isInt({min:1}),body('name').trim().isLength({min:2,max:120}),body('type').trim().isLength({min:2,max:80}),body('building').trim().isLength({min:2,max:200}),body('capacity').isInt({min:1,max:10000}),body('features').optional().isArray({max:40}),body('img').optional().isString().isLength({max:1000}),body('approvalRequired').isBoolean()], validate, (req,res) => {
+app.put('/api/rooms/:id', requireAuth, requireAdmin, [param('id').isInt({min:1}),...roomValidation], validate, (req,res) => {
   const info=db.prepare('UPDATE rooms SET name=?,type=?,building=?,capacity=?,img=?,features=?,approval_required=? WHERE id=?').run(req.body.name.trim(),req.body.type.trim(),req.body.building.trim(),Number(req.body.capacity),String(req.body.img||''),JSON.stringify(req.body.features||[]),req.body.approvalRequired?1:0,Number(req.params.id));
   if(!info.changes)return res.status(404).json({error:'ไม่พบห้อง'});res.json({room:roomView(db.prepare('SELECT * FROM rooms WHERE id=?').get(Number(req.params.id)))});
 });
@@ -235,7 +335,8 @@ app.get('/api/admin/dashboard', requireAuth, requireAdmin, (req,res) => {
 app.use('/assets',express.static(path.join(__dirname,'assets'),{dotfiles:'deny',fallthrough:false}));
 app.get(['/','/index.html'],(req,res)=>res.sendFile(path.join(__dirname,'index.html')));
 app.get('/styles.css',(req,res)=>res.sendFile(path.join(__dirname,'styles.css')));
-app.get('/script.js',(req,res)=>res.sendFile(path.join(__dirname,'script.js')));
+app.get('/script.js',(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'script.js'));});
 app.use((err,req,res,next)=>{ if((err.status||500)>=500)console.error(err); if(res.headersSent)return next(err); res.status(err.status||500).json({error:err.status?err.message:'เกิดข้อผิดพลาดในระบบ'}); });
 const port=Number(process.env.PORT)||3000;
-app.listen(port,()=>console.log(`UBRU room booking server listening on http://localhost:${port}`));
+const host=process.env.HOST||'127.0.0.1';
+app.listen(port,host,()=>console.log(`UBRU room booking server listening on http://${host}:${port}`));
